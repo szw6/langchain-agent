@@ -8,9 +8,11 @@ from rag.vector_store import VectorStoreService
 from utils.config_handler import chroma_conf
 from utils.prompt_loader import load_rag_prompts
 from utils.logger_handler import logger
+from utils.sentiment_engine import analyze_sentiment
 from langchain_core.prompts import PromptTemplate
 from model.factory import get_chat_model
 from langchain_core.output_parsers import StrOutputParser
+
 
 class RagSummarizeService(object):
     """RAG 服务入口，负责检索、重排、总结和来源整理。"""
@@ -44,7 +46,7 @@ class RagSummarizeService(object):
         }
 
     def _init_chain(self):
-        """构造“提示词 -> 模型 -> 文本解析”的最小总结链。"""
+        """构造"提示词 -> 模型 -> 文本解析"的最小总结链。"""
         chain = self.prompt_template | self.model | StrOutputParser()
         return chain
 
@@ -122,7 +124,7 @@ class RagSummarizeService(object):
         """提取检索关键词，供后续重排计算覆盖率。"""
         expanded = self._expand_query(query)
         terms = set()
-        for term in re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9]+", expanded):
+        for term in re.findall(r"[一-鿿]{2,}|[a-z0-9]+", expanded):
             if term not in self.stopwords:
                 terms.add(term)
         return terms
@@ -130,14 +132,14 @@ class RagSummarizeService(object):
     @staticmethod
     def _document_terms(content: str) -> set[str]:
         """把文档内容切成词项集合，便于和 query 做简单交集比较。"""
-        return set(re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9]+", content.lower()))
+        return set(re.findall(r"[一-鿿]{2,}|[a-z0-9]+", content.lower()))
 
     def _rerank_score(self, query_terms: set[str], content: str, relevance_score: float) -> float:
         """
         组合向量分数和关键词覆盖率。
 
         这里不是完整 reranker，而是一个成本很低的启发式重排，
-        用来避免“向量相似但关键词没对上”的片段排得过高。
+        用来避免"向量相似但关键词没对上"的片段排得过高。
         """
         doc_terms = self._document_terms(content)
         overlap = len(query_terms & doc_terms)
@@ -203,7 +205,26 @@ class RagSummarizeService(object):
         return "\n参考来源：\n- " + "\n- ".join(references)
 
     def rag_summarize(self, query):
-        """对外暴露的 RAG 总入口，返回“总结结果 + 引用来源”。"""
+        """对外暴露的 RAG 总入口，返回"总结结果 + 引用来源"。"""
+        # --- 1. 情绪识别（RAG 检索前拦截）---
+        sentiment = analyze_sentiment(query)
+        logger.info(
+            f"[情绪分析] query={query[:60]} | label={sentiment['label']} | "
+            f"score={sentiment['score']} | need_human={sentiment['need_human']} | "
+            f"rules={sentiment['matched_rules']}"
+        )
+
+        # need_human：直接返回人工介入提示，不走 RAG
+        if sentiment["need_human"]:
+            from utils.sentiment_engine import get_engine
+            human_msg = get_engine().get_need_human_response()
+            matched = ", ".join(sentiment["matched_rules"])
+            return (
+                f"{human_msg}\n\n"
+                f"[系统提示: 情绪识别命中人工介入规则 — {matched}]"
+            )
+
+        # --- 2. 正常 RAG 检索 ---
         try:
             context_docs = self.retriever_docs(query)
         except Exception as e:
@@ -228,6 +249,12 @@ class RagSummarizeService(object):
                 f"[参考资料{counter}] {' | '.join(location_parts)}\n{doc.page_content.strip()}"
             )
         context = "\n\n".join(context_parts)
+
+        # --- 3. 注入情绪提示词 ---
+        sentiment_prompt = sentiment.get("sentiment_prompt", "")
+        if sentiment_prompt:
+            context = f"{sentiment_prompt}\n\n{context}"
+
         try:
             answer = self.chain.invoke(
                 {

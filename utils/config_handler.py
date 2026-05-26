@@ -1,5 +1,9 @@
 import yaml
+from dotenv import load_dotenv
 from utils.path_tool import get_abs_path
+
+# 在首次 import 配置时自动加载项目根目录下的 .env 文件
+load_dotenv(dotenv_path=get_abs_path(".env"))
 
 
 def load_rag_config(config_path: str = get_abs_path("config/rag.yaml"), encoding: str = "utf-8"):

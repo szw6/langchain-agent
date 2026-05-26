@@ -31,7 +31,12 @@ def validate_runtime() -> list[str]:
         if not os.path.exists(abs_path):
             issues.append(f"{label}不存在: {abs_path}")
 
-    # 模型配置和向量库配置属于“缺了就不该继续运行”的硬依赖。
+    # 情绪规则文件缺失时提示，但不阻断启动（引擎会降级为中性结果）
+    sentiment_rules_path = get_abs_path("config/sentiment_rules.yaml")
+    if not os.path.exists(sentiment_rules_path):
+        issues.append(f"情绪规则文件不存在: {sentiment_rules_path}，情绪识别功能将不可用。")
+
+    # 模型配置和向量库配置属于"缺了就不该继续运行"的硬依赖。
     for key in ("chat_model_name", "embedding_model_name"):
         if not rag_conf.get(key):
             issues.append(f"模型配置缺失: {key}")

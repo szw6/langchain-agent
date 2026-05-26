@@ -403,10 +403,59 @@ def load_reference_preview(reference: str) -> str:
     return f"当前仅支持预览 txt/pdf 来源，文件：{source}"
 
 
+_NEED_HUMAN_MARKER = "[系统提示: 情绪识别命中人工介入规则"
+
+
+def _is_need_human(content: str) -> tuple[bool, str, str]:
+    """
+    判断消息是否为人工介入回复。
+    Returns: (is_human, display_body, rule_info)
+    """
+    if _NEED_HUMAN_MARKER in content:
+        idx = content.index(_NEED_HUMAN_MARKER)
+        body = content[:idx].strip()
+        # 提取 "— " 之后到 "]" 之前的规则名称
+        tail = content[idx:]
+        rule_info = ""
+        if "— " in tail:
+            after_dash = tail.split("— ", 1)[1]
+            rule_info = after_dash.split("]")[0].strip()
+        return True, body, rule_info
+    return False, content, ""
+
+
 def render_message(message: dict):
-    """统一渲染一条消息，自动处理正文和引用来源。"""
-    body, references = split_response_and_references(message["content"])
-    st.write(body or message["content"])
+    """统一渲染一条消息，自动处理正文、引用来源和人工介入标记。"""
+    content = message["content"]
+
+    # 人工介入消息：特殊样式渲染
+    is_human, human_body, rule_info = _is_need_human(content)
+    if is_human:
+        st.markdown(
+            f"""
+            <div style="
+                border: 1px solid #f2c26b;
+                border-radius: 12px;
+                padding: 0.8rem 1rem;
+                background: linear-gradient(135deg, rgba(242,194,107,0.08), rgba(242,194,107,0.02));
+                margin: 0.5rem 0;
+            ">
+                <div style="font-size: 0.82rem; font-weight: 800; color: #b8860b; margin-bottom: 0.4rem;">
+                    🔴 已转人工介入
+                </div>
+                <div style="font-size: 0.78rem; color: #8b6914; margin-bottom: 0.6rem;">
+                    触发规则：{rule_info}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.write(human_body)
+        return
+
+    # 正常消息：正文 + 参考来源
+    body, references = split_response_and_references(content)
+    st.write(body or content)
     render_references(references)
 
 
@@ -521,10 +570,35 @@ if prompt:
         if not response_text:
             response_text = "暂时没有生成有效回答，请重试。"
         else:
-            # 流式阶段只先展示正文，结束后再补渲染来源区，避免中途闪烁。
-            body, references = split_response_and_references(response_text)
-            response_placeholder.markdown(body or response_text)
-            render_references(references)
+            # need_human 消息：用特殊样式渲染，不拆分参考来源
+            if _NEED_HUMAN_MARKER in response_text:
+                is_hb, human_body, rule_info = _is_need_human(response_text)
+                if is_hb:
+                    response_placeholder.markdown(
+                        f"""
+                        <div style="
+                            border: 1px solid #f2c26b;
+                            border-radius: 12px;
+                            padding: 0.8rem 1rem;
+                            background: linear-gradient(135deg, rgba(242,194,107,0.08), rgba(242,194,107,0.02));
+                            margin: 0.5rem 0;
+                        ">
+                            <div style="font-size: 0.82rem; font-weight: 800; color: #b8860b; margin-bottom: 0.4rem;">
+                                🔴 已转人工介入
+                            </div>
+                            <div style="font-size: 0.78rem; color: #8b6914; margin-bottom: 0.6rem;">
+                                触发规则：{rule_info}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    response_placeholder.markdown(human_body)
+            else:
+                # 流式阶段只先展示正文，结束后再补渲染来源区，避免中途闪烁。
+                body, references = split_response_and_references(response_text)
+                response_placeholder.markdown(body or response_text)
+                render_references(references)
     except Exception as e:
         logger.error(f"对话处理失败: {str(e)}", exc_info=True)
         response_text = "服务暂时不可用，请稍后重试。"
