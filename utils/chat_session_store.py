@@ -49,16 +49,19 @@ def save_sessions(sessions: list[dict]) -> None:
         json.dump(sessions, f, ensure_ascii=False, indent=2)
 
 
-def create_session(title: str = "新对话") -> dict:
+def create_session(title: str = "新对话", memory: dict | None = None) -> dict:
     """创建一个新的空会话对象。"""
     now = _now()
-    return {
+    session = {
         "id": uuid.uuid4().hex,
         "title": title,
         "created_at": now,
         "updated_at": now,
         "messages": [],
     }
+    if memory:
+        session["memory"] = memory
+    return session
 
 
 def upsert_session(sessions: list[dict], session: dict) -> list[dict]:
@@ -81,12 +84,22 @@ def sort_sessions(sessions: list[dict]) -> list[dict]:
     return sorted(sessions, key=lambda item: item.get("updated_at", ""), reverse=True)
 
 
-def update_session_messages(session: dict, messages: list[dict]) -> dict:
+def update_session_messages(session: dict, messages: list[dict], memory: dict | None = None) -> dict:
     """在保留元信息的前提下，刷新会话消息和标题。"""
     updated = dict(session)
     updated["messages"] = messages
     updated["updated_at"] = _now()
     updated["title"] = _session_title_from_messages(messages)
+    if memory is not None:
+        updated["memory"] = memory
+    return updated
+
+
+def update_session_memory(session: dict, memory_data: dict) -> dict:
+    """更新会话的记忆元数据（摘要、事实等）。"""
+    updated = dict(session)
+    updated["memory"] = memory_data
+    updated["updated_at"] = _now()
     return updated
 
 

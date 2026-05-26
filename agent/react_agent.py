@@ -85,22 +85,39 @@ class ReactAgent:
 
         return facts
 
-    def execute_stream(self, messages: list[dict]):
+    def execute_stream(self, messages: list[dict], session_memory: dict | None = None):
         """
         执行一次带历史上下文的流式对话。
 
-        除了原始 messages，还会把抽取出的 session_facts 注入到 runtime context，
+        除了原始 messages，还会把抽取出的 session_facts 和 session_summary 注入到 runtime context，
         供动态提示词和后续工具调用共同使用。
         """
         normalized_messages = self._normalize_messages(messages)
         session_facts = self._extract_session_facts(normalized_messages)
+
+        # 从 session_memory 中提取 summary
+        session_summary = ""
+        if session_memory:
+            session_summary = session_memory.get("summary", "")
+            # 合并 memory 中的 facts
+            memory_facts = session_memory.get("facts", {})
+            if memory_facts:
+                session_facts.update(memory_facts)
+
         input_dict = {"messages": normalized_messages}
 
-        # runtime context 用来传递“报告模式”“会话事实”等跨轮共享信息。
+        # runtime context 用来传递”报告模式””会话事实””会话摘要”等跨轮共享信息。
+        context = {
+            "report": False,
+            "session_facts": session_facts,
+        }
+        if session_summary:
+            context["session_summary"] = session_summary
+
         for chunk in self.agent.stream(
             input_dict,
             stream_mode="values",
-            context={"report": False, "session_facts": session_facts},
+            context=context,
         ):
             latest_message = chunk["messages"][-1]
             # 仅向前端输出最终答案，避免把工具调用中间态直接暴露到 UI。

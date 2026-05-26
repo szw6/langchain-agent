@@ -58,12 +58,21 @@ def report_prompt_switch(request: ModelRequest):     # 动态切换提示词
     """根据 runtime context 动态拼接主提示词、报告提示词和会话事实。"""
     is_report = request.runtime.context.get("report", False)
     session_facts = request.runtime.context.get("session_facts", {})
+    session_summary = request.runtime.context.get("session_summary", "")
+
     facts_prompt = ""
     if session_facts:
         # 这里把历史中抽取出的稳定事实显式塞进提示词，降低模型遗忘概率。
         fact_lines = [f"- {key}: {value}" for key, value in session_facts.items()]
         facts_prompt = "\n\n已知会话事实：\n" + "\n".join(fact_lines) + "\n请优先使用这些历史事实回答，不要忽略用户之前已经明确提到的信息。"
-    if is_report:               # 是报告生成场景，返回报告生成提示词内容
-        return load_report_prompts() + facts_prompt
 
-    return load_system_prompts() + facts_prompt
+    summary_prompt = ""
+    if session_summary:
+        summary_prompt = f"\n\n历史对话摘要：\n{session_summary}\n请基于以上摘要和当前对话理解用户意图。"
+
+    combined_context = summary_prompt + facts_prompt
+
+    if is_report:               # 是报告生成场景，返回报告生成提示词内容
+        return load_report_prompts() + combined_context
+
+    return load_system_prompts() + combined_context

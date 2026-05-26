@@ -1,0 +1,22 @@
+# 会话记忆配置
+memory:
+  # Token阈值，超过此值触发压缩（中文字符×1.5估算）
+  token_threshold: 16000
+
+  # 消息数量阈值，超过此值触发压缩
+  message_threshold: 20
+
+  # 保留最近N条消息不压缩（默认10条 = 5轮对话）
+  keep_recent_count: 10
+
+  # 最大摘要长度（字符数）
+  max_summary_length: 2000
+
+  # 首次压缩前的最小消息数
+  min_messages_before_compress: 10
+
+  # 是否启用冗余信息过滤
+  enable_redundancy_filter: true
+
+  # 近似重复检测阈值（Jaccard相似度）
+  redundancy_jaccard_threshold: 0.7

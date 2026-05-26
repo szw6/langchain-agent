@@ -14,6 +14,8 @@ from utils.chat_session_store import (
 from utils.file_handler import clean_text, pdf_loader
 from utils.logger_handler import logger
 from utils.path_tool import get_abs_path
+from utils.memory_manager import SessionMemoryManager
+from utils.config_handler import memory_conf
 import re
 
 
@@ -252,6 +254,10 @@ if runtime_issues:
 if "agent" not in st.session_state:
     st.session_state["agent"] = ReactAgent()
 
+# 记忆管理器初始化
+if "memory_manager" not in st.session_state:
+    st.session_state["memory_manager"] = SessionMemoryManager(memory_conf)
+
 # sessions 存的是全部历史会话；current_session_id 指向当前打开的那一个。
 if "sessions" not in st.session_state:
     sessions = sort_sessions(load_sessions())
@@ -280,10 +286,10 @@ def get_current_session() -> dict:
     return fallback
 
 
-def persist_current_messages(messages: list[dict]) -> None:
+def persist_current_messages(messages: list[dict], memory: dict | None = None) -> None:
     """把当前会话消息写回内存和本地文件。"""
     current = get_current_session()
-    updated = update_session_messages(current, messages)
+    updated = update_session_messages(current, messages, memory)
     st.session_state["sessions"] = sort_sessions(upsert_session(st.session_state["sessions"], updated))
     st.session_state["current_session_id"] = updated["id"]
     save_sessions(st.session_state["sessions"])
@@ -560,7 +566,13 @@ if prompt:
 
     try:
         with st.spinner("正在分析问题并检索答案..."):
-            res_stream = st.session_state["agent"].execute_stream(current_messages)
+            # 使用记忆管理器压缩消息
+            session_memory = current_session.get("memory", {})
+            managed_messages, updated_memory = st.session_state["memory_manager"].prepare_messages_for_agent(
+                current_messages, session_memory
+            )
+
+            res_stream = st.session_state["agent"].execute_stream(managed_messages, updated_memory)
             with st.chat_message("assistant", avatar="🤖"):
                 response_placeholder = st.empty()
                 for _ in capture(res_stream, response_chunks, response_placeholder):
@@ -607,5 +619,6 @@ if prompt:
 
     # 最终回答也要落盘，这样刷新页面后仍能恢复完整会话。
     current_messages = current_messages + [{"role": "assistant", "content": response_text}]
-    persist_current_messages(current_messages)
+    # 持久化消息和记忆更新
+    persist_current_messages(current_messages, updated_memory)
     st.rerun()
