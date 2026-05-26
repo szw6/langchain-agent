@@ -1,4 +1,5 @@
 from typing import Callable
+import time
 from utils.prompt_loader import load_system_prompts, load_report_prompts
 from langchain.agents import AgentState
 from langchain.agents.middleware import wrap_tool_call, before_model, dynamic_prompt, ModelRequest
@@ -7,6 +8,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from utils.logger_handler import logger
+from utils.trace_context import record_tool_call
 
 
 
@@ -23,9 +25,12 @@ def monitor_tool(
     logger.info(f"[tool monitor]执行工具：{tool_name}")
     logger.info(f"[tool monitor]传入参数：{tool_args}")
 
+    t0 = time.perf_counter()
     try:
         result = handler(request)
-        logger.info(f"[tool monitor]工具{tool_name}调用成功")
+        duration_ms = (time.perf_counter() - t0) * 1000
+        logger.info(f"[tool monitor]工具{tool_name}调用成功，耗时{duration_ms:.1f}ms")
+        record_tool_call(tool_name, tool_args, True, duration_ms)
 
         # 报告模式不靠模型自己记忆，而是由专门工具显式打开上下文开关。
         if tool_name == "fill_context_for_report":
@@ -33,7 +38,9 @@ def monitor_tool(
 
         return result
     except Exception as e:
+        duration_ms = (time.perf_counter() - t0) * 1000
         logger.error(f"工具{tool_name}调用失败，原因：{str(e)}", exc_info=True)
+        record_tool_call(tool_name, tool_args, False, duration_ms, str(e))
         return ToolMessage(
             content=f"工具{tool_name}调用失败：{str(e)}",
             tool_call_id=request.tool_call.get("id", tool_name),

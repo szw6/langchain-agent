@@ -18,6 +18,7 @@
 - 检测到 Chroma 索引异常时可自动重建。
 - 启动前会进行运行环境自检，缺少关键配置时直接阻止应用启动。
 - **情绪识别规则引擎**：RAG 检索前对用户 query 进行情绪分析，命中高危规则（投诉、法律、安全事故等）直接转人工介入；低风险情绪标签注入 RAG 提示词，引导 LLM 调整回答语气。
+- **Trace 追踪与置信度评估**：记录每次对话的完整链路（情绪分析、工具调用、RAG 检索分数、LLM 耗时），计算综合置信度，低置信度时主动追问用户以获取更多信息。
 
 ## 会话记忆压缩机制
 
@@ -144,6 +145,136 @@
 - `rag/rag_service.py` — 在 `rag_summarize()` 入口调用情绪识别
 - `app.py` — 前端识别人工介入消息，渲染特殊样式（金色边框 + 🔴 已转人工介入）
 
+## Trace 追踪与置信度评估
+
+为解决回答质量不可控、无法离线分析的问题，项目实现了结构化 Trace 追踪和置信度评估机制。
+
+### 工作流程
+
+```
+用户输入
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│  ReactAgent.execute_stream()                                │
+│                                                             │
+│  1. start_trace() 创建 TraceRecord                          │
+│                                                             │
+│  2. 中间件层记录                                            │
+│     - monitor_tool: 工具调用耗时/成功率                      │
+│     - rag_service: 情绪分数、RAG检索分数                     │
+│     - record_llm_latency: LLM调用耗时                       │
+│                                                             │
+│  3. end_trace() 获取完整 Trace                              │
+└─────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│  置信度计算 (ConfidenceEngine)                               │
+│                                                             │
+│  情绪置信度:                                                 │
+│    - need_human=True => 0.5                                 │
+│    - 中性分数[-10,10] => 0.9                                │
+│    - 负面情绪 => max(0.1, 0.8 - score/100)                 │
+│    - 正面情绪 => 0.85                                       │
+│                                                             │
+│  RAG置信度:                                                  │
+│    - base = top_rerank * 0.6 + avg_rerank * 0.4             │
+│    - 候选<3 => base *= 0.7                                  │
+│    - 最高分<0.25 => base *= 0.5                             │
+│                                                             │
+│  综合置信度 = 情绪 * 0.3 + RAG * 0.7                        │
+└─────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│  追问决策                                                    │
+│                                                             │
+│  综合置信度 < 0.45 => 触发追问                               │
+│                                                             │
+│  追问策略:                                                   │
+│    - RAG相关性低: "能否具体描述遇到的问题？"                  │
+│    - RAG覆盖度低: "能否提供更多细节？"                       │
+│    - 情绪负面: "理解您的心情，能否详细说明？"                 │
+│                                                             │
+│  前端渲染追问卡片，用户选择:                                 │
+│    - "回答这个问题" => 追问内容作为新输入重新执行              │
+│    - "跳过" => 使用当前回答                                  │
+└─────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Trace 持久化                                                │
+│                                                             │
+│  存储路径: storage/traces/YYYY-MM-DD.jsonl                   │
+│  格式: 每行一个 JSON 对象                                    │
+│  支持按 session_id 或日期查询                                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 配置参数（config/confidence.yaml）
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| follow_up_threshold | 0.45 | 综合置信度低于此值触发追问 |
+| weights.sentiment | 0.3 | 情绪置信度权重 |
+| weights.rag | 0.7 | RAG置信度权重 |
+| rag.low_relevance_threshold | 0.25 | RAG低相关性阈值 |
+| max_follow_up_rounds | 1 | 最大追问次数 |
+| enabled | true | 是否启用追问功能 |
+
+### Trace 数据结构
+
+```json
+{
+  "trace_id": "uuid",
+  "session_id": "会话ID",
+  "timestamp": "ISO 8601",
+  "query": "用户原始问题",
+  "sentiment": {
+    "score": 0,
+    "level": "neutral",
+    "label": "中性",
+    "need_human": false,
+    "matched_rules": [],
+    "confidence": 0.9
+  },
+  "tool_calls": [
+    {
+      "tool_name": "rag_summarize",
+      "args": {"query": "..."},
+      "success": true,
+      "duration_ms": 1234
+    }
+  ],
+  "rag": {
+    "query": "原始query",
+    "expanded_query": "扩展query",
+    "candidate_count": 6,
+    "selected_count": 4,
+    "top_rerank_score": 0.72,
+    "avg_rerank_score": 0.55,
+    "confidence": 0.68
+  },
+  "llm_latency_ms": 2100,
+  "combined_confidence": 0.67,
+  "follow_up_triggered": false,
+  "follow_up_action": null
+}
+```
+
+### 相关文件
+
+- `config/confidence.yaml` — 置信度配置（阈值、权重、追问参数）
+- `utils/trace_context.py` — Trace 数据结构和 contextvars 上下文管理
+- `utils/trace_store.py` — Trace 持久化存储（JSONL 格式）
+- `utils/confidence.py` — 置信度计算引擎
+- `utils/follow_up.py` — 低置信度追问生成器
+- `rag/rag_service.py` — 埋点记录情绪和 RAG 分数
+- `agent/tools/middleware.py` — 埋点记录工具调用耗时
+- `agent/react_agent.py` — 启动 Trace 生命周期
+- `app.py` — 置信度检查、追问卡片渲染、Trace 持久化
+
 ## 当前项目结构
 
 - `app.py`
@@ -154,10 +285,20 @@
 
 - `agent/tools/agent_tools.py`
   业务工具定义，包括：
-  - 知识库检索总结
+  - 知识库检索总结（支持 query_type 枚举）
   - 实时天气查询
   - 用户 ID / 城市读取
   - 用户画像、可用月份、最近一期记录、指定月份报告读取
+  - 时间范围查询（支持 TimeRange 枚举和自定义区间）
+  - 所有工具返回统一 ToolResult 结构
+
+- `agent/tools/tool_schema.py`
+  工具公共数据模型：
+  - ToolStatus 枚举（success / not_found / degraded / error / no_data）
+  - QueryType 枚举（fault / maintenance / purchase / usage / general）
+  - DataCategory 枚举（feature / efficiency / consumable / comparison / all）
+  - TimeRange 枚举（latest / last_3 / last_6 / all）
+  - ToolResult dataclass（status / message / evidence / next_step）
 
 - `agent/tools/middleware.py`
   中间件逻辑，包括工具监控、模型调用前日志、报告场景的动态提示词切换和会话摘要注入。
@@ -199,6 +340,30 @@
   - 近似重复检测（Jaccard相似度）
   - 保留对话流程
 
+- `utils/trace_context.py`
+  Trace 数据结构和 contextvars 上下文管理，支持：
+  - TraceRecord、SentimentTrace、RAGTrace、ToolCallTrace 数据结构
+  - 使用 contextvars 实现请求级别的 Trace 数据传递
+  - 便捷写入函数：record_sentiment、record_rag、record_tool_call、record_llm_latency
+
+- `utils/trace_store.py`
+  Trace 持久化存储，支持：
+  - 按日期存储为 JSONL 文件（storage/traces/YYYY-MM-DD.jsonl）
+  - 按 session_id 查询历史 Trace
+  - 按日期查询所有 Trace
+
+- `utils/confidence.py`
+  置信度计算引擎，支持：
+  - 情绪置信度计算（基于规则命中数和分数区间）
+  - RAG 置信度计算（基于检索分数和候选数量）
+  - 综合置信度计算（加权平均）
+
+- `utils/follow_up.py`
+  低置信度追问生成器，支持：
+  - 根据置信度最弱维度生成追问内容
+  - 多种追问模板（RAG相关性低、覆盖度低、情绪负面等）
+  - 追问次数限制
+
 - `config/`
   项目配置目录：
   - `rag.yaml`：模型配置
@@ -207,6 +372,7 @@
   - `agent.yaml`：外部用户数据配置
   - `sentiment_rules.yaml`：情绪识别规则配置（关键词、正则、分数、等级区间、人工介入回复模板）
   - `memory.yaml`：会话记忆配置（Token阈值、消息阈值、保留数量、冗余过滤参数）
+  - `confidence.yaml`：置信度配置（阈值、权重、追问参数）
 
 - `prompts/`
   提示词目录：
@@ -273,10 +439,20 @@
 
 ## 已接入工具
 
+所有工具返回统一的 `ToolResult` 结构（`agent/tools/tool_schema.py`）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `status` | ToolStatus 枚举 | `success` / `not_found` / `degraded` / `error` / `no_data` |
+| `message` | str | 给 LLM 消费的自然语言结果 |
+| `evidence` | dict | 结构化数据（供 Trace 和调试） |
+| `next_step` | str | 建议的下一步操作 |
+
 ### 1. 知识库工具
 
-- `rag_summarize(query)`
+- `rag_summarize(query, query_type="general")`
   从本地知识库检索资料并总结返回。
+  - `query_type` 枚举：`fault`(故障排查)、`maintenance`(维护保养)、`purchase`(选购建议)、`usage`(使用技巧)、`general`(通用咨询)
 
 ### 2. 天气工具
 
@@ -301,14 +477,21 @@
 - `list_report_months(user_id)`
   获取某个用户有哪些可查询月份。
 
-- `fetch_latest_external_data(user_id)`
+- `fetch_latest_external_data(user_id, data_category="all")`
   获取某个用户最近一期记录。
+  - `data_category` 枚举：`feature`(特征)、`efficiency`(效率)、`consumable`(耗材)、`comparison`(对比)、`all`(全部)
 
 - `get_user_profile(user_id)`
   获取某个用户的基础画像和最近记录摘要。
 
 - `fetch_external_data(user_id, month)`
-  获取某个用户指定月份的使用记录。
+  严格查询指定月份记录（格式 `YYYY-MM`），不存在返回 `not_found`（不做降级）。
+
+- `fetch_external_data_range(user_id, time_range="latest", start_month="", end_month="", data_category="all", max_months=6)`
+  按时间范围查询用户使用记录。
+  - `time_range` 枚举：`latest`(最近一期)、`last_3`(最近3个月)、`last_6`(最近6个月)、`all`(全部)
+  - `start_month` / `end_month`：自定义区间（`YYYY-MM`），指定后 `time_range` 被忽略
+  - `max_months`：最大返回月数，硬上限 12
 
 - `fill_context_for_report()`
   为报告生成场景注入上下文标记。

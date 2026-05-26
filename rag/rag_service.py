@@ -3,12 +3,14 @@
 """
 import re
 import threading
+import time
 
 from rag.vector_store import VectorStoreService
 from utils.config_handler import chroma_conf
 from utils.prompt_loader import load_rag_prompts
 from utils.logger_handler import logger
 from utils.sentiment_engine import analyze_sentiment
+from utils.trace_context import record_sentiment, record_rag, record_llm_latency
 from langchain_core.prompts import PromptTemplate
 from model.factory import get_chat_model
 from langchain_core.output_parsers import StrOutputParser
@@ -22,6 +24,7 @@ class RagSummarizeService(object):
         self.vector_store = VectorStoreService()
         self._collection_ready_checked = False
         self._repair_lock = threading.Lock()
+        self._last_candidate_count = 0
         self.prompt_text = load_rag_prompts()
         self.prompt_template = PromptTemplate.from_template(self.prompt_text)
         self.model = get_chat_model()
@@ -156,8 +159,10 @@ class RagSummarizeService(object):
                 expanded_query,
                 k=self.candidate_k,
             )
+            self._last_candidate_count = len(candidates)
         except Exception as e:
             logger.error(f"向量检索失败: {str(e)}", exc_info=True)
+            self._last_candidate_count = 0
             if self._is_corrupted_index_error(e):
                 try:
                     self._repair_vector_store()
@@ -204,8 +209,8 @@ class RagSummarizeService(object):
             return ""
         return "\n参考来源：\n- " + "\n- ".join(references)
 
-    def rag_summarize(self, query):
-        """对外暴露的 RAG 总入口，返回"总结结果 + 引用来源"。"""
+    def rag_summarize(self, query, query_type="general"):
+        """对外暴露的 RAG 总入口，返回结构化 dict。"""
         # --- 1. 情绪识别（RAG 检索前拦截）---
         sentiment = analyze_sentiment(query)
         logger.info(
@@ -214,25 +219,69 @@ class RagSummarizeService(object):
             f"rules={sentiment['matched_rules']}"
         )
 
+        # 写入情绪 Trace
+        record_sentiment(sentiment)
+
         # need_human：直接返回人工介入提示，不走 RAG
         if sentiment["need_human"]:
             from utils.sentiment_engine import get_engine
             human_msg = get_engine().get_need_human_response()
             matched = ", ".join(sentiment["matched_rules"])
-            return (
-                f"{human_msg}\n\n"
-                f"[系统提示: 情绪识别命中人工介入规则 — {matched}]"
-            )
+            return {
+                "status": "need_human",
+                "message": f"{human_msg}\n\n[系统提示: 情绪识别命中人工介入规则 — {matched}]",
+                "evidence": {
+                    "matched_rules": sentiment["matched_rules"],
+                    "sentiment_score": sentiment["score"],
+                },
+                "next_step": "转人工客服处理",
+            }
 
         # --- 2. 正常 RAG 检索 ---
         try:
             context_docs = self.retriever_docs(query)
         except Exception as e:
             logger.error(f"RAG检索流程异常: {str(e)}", exc_info=True)
-            return "知识库检索暂时不可用，请稍后重试。"
+            return {
+                "status": "error",
+                "message": "知识库检索暂时不可用，请稍后重试。",
+                "evidence": {"error": str(e)},
+                "next_step": "稍后重试或联系技术支持",
+            }
 
         if not context_docs:
-            return "未检索到相关参考资料。"
+            return {
+                "status": "no_data",
+                "message": "未检索到相关参考资料。",
+                "evidence": {
+                    "query": query,
+                    "query_type": query_type,
+                    "candidate_count": self._last_candidate_count,
+                },
+                "next_step": "尝试换一种方式描述问题，或提供更具体的信息",
+            }
+
+        # 写入 RAG Trace
+        doc_scores = [
+            {
+                "source": d.metadata.get("source", ""),
+                "page": d.metadata.get("page"),
+                "chunk_index": d.metadata.get("chunk_index"),
+                "relevance_score": d.metadata.get("relevance_score", 0),
+                "rerank_score": d.metadata.get("rerank_score", 0),
+            }
+            for d in context_docs
+        ]
+        rerank_scores = [d["rerank_score"] for d in doc_scores]
+        record_rag(
+            query=query,
+            expanded_query=self._expand_query(query),
+            candidate_count=self._last_candidate_count,
+            selected_count=len(context_docs),
+            top_rerank_score=max(rerank_scores) if rerank_scores else 0.0,
+            avg_rerank_score=sum(rerank_scores) / len(rerank_scores) if rerank_scores else 0.0,
+            doc_scores=doc_scores,
+        )
 
         # 把命中文档拼成可追踪来源的上下文，便于模型总结时引用。
         context_parts = []
@@ -256,16 +305,46 @@ class RagSummarizeService(object):
             context = f"{sentiment_prompt}\n\n{context}"
 
         try:
+            t0 = time.perf_counter()
             answer = self.chain.invoke(
                 {
                     "input": query,
                     "context": context,
                 }
             )
-            return answer.strip() + self._format_references(context_docs)
+            record_llm_latency((time.perf_counter() - t0) * 1000)
+
+            references = []
+            seen = set()
+            for doc in context_docs:
+                source = doc.metadata.get("source", "未知来源")
+                page = doc.metadata.get("page")
+                ref = f"{source} 第{page + 1}页" if isinstance(page, int) else source
+                if ref not in seen:
+                    seen.add(ref)
+                    references.append(ref)
+
+            return {
+                "status": "success",
+                "message": answer.strip(),
+                "evidence": {
+                    "query": query,
+                    "query_type": query_type,
+                    "retrieved_count": len(context_docs),
+                    "top_rerank_score": max(rerank_scores) if rerank_scores else 0.0,
+                    "references": references,
+                    "doc_scores": doc_scores,
+                },
+                "next_step": "",
+            }
         except Exception as e:
             logger.error(f"RAG总结失败: {str(e)}", exc_info=True)
-            return "知识总结暂时不可用，请稍后重试。"
+            return {
+                "status": "error",
+                "message": "知识总结暂时不可用，请稍后重试。",
+                "evidence": {"error": str(e)},
+                "next_step": "稍后重试或联系技术支持",
+            }
 
 
 if __name__ == '__main__':

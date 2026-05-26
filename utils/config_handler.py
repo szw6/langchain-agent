@@ -31,6 +31,11 @@ def load_memory_config(config_path: str = get_abs_path("config/memory.yaml"), en
     with open(config_path, encoding=encoding) as f:
         return yaml.safe_load(f)
 
+def load_confidence_config(config_path: str = get_abs_path("config/confidence.yaml"), encoding: str = "utf-8"):
+    """读取置信度配置。"""
+    with open(config_path, encoding=encoding) as f:
+        return yaml.safe_load(f)
+
 
 # 配置在 import 阶段加载成全局对象，便于各模块直接使用。
 rag_conf = load_rag_config()
@@ -38,5 +43,6 @@ chroma_conf = load_chroma_config()
 prompts_conf = load_prompts_config()
 agent_conf = load_agent_config()
 memory_conf = load_memory_config()
+confidence_conf = load_confidence_config()
 if __name__ == '__main__':
     print(rag_conf['chat_model_name'])

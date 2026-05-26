@@ -1,0 +1,30 @@
+# 置信度配置
+confidence:
+  # 综合置信度低于此值触发追问
+  follow_up_threshold: 0.45
+
+  # 各维度权重 (sentiment + rag = 1.0)
+  weights:
+    sentiment: 0.3
+    rag: 0.7
+
+  # 情绪置信度计算参数
+  sentiment:
+    # score在[-10, 10]区间视为中性，置信度高
+    neutral_score_range: [-10, 10]
+
+  # RAG置信度计算参数
+  rag:
+    # rerank_score >= this => 高相关性
+    high_relevance_threshold: 0.6
+    # rerank_score <= this => 低相关性
+    low_relevance_threshold: 0.25
+    # top doc rerank_score权重
+    top_score_weight: 0.6
+    avg_score_weight: 0.4
+
+  # 追问最大次数 (同一query内)
+  max_follow_up_rounds: 1
+
+  # 是否启用追问功能
+  enabled: true

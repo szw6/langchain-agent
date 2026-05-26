@@ -15,7 +15,11 @@ from utils.file_handler import clean_text, pdf_loader
 from utils.logger_handler import logger
 from utils.path_tool import get_abs_path
 from utils.memory_manager import SessionMemoryManager
-from utils.config_handler import memory_conf
+from utils.config_handler import memory_conf, confidence_conf
+from utils.trace_context import end_trace
+from utils.confidence import compute_confidence
+from utils.follow_up import should_follow_up, generate_follow_up
+from utils.trace_store import save_trace
 import re
 
 
@@ -272,6 +276,9 @@ if "current_session_id" not in st.session_state:
 if "pending_prompt" not in st.session_state:
     st.session_state["pending_prompt"] = ""
 
+if "follow_up_round" not in st.session_state:
+    st.session_state["follow_up_round"] = 0
+
 
 def get_current_session() -> dict:
     """根据 current_session_id 取当前会话；如果丢失则兜底创建一个新会话。"""
@@ -299,6 +306,7 @@ def switch_session(session_id: str) -> None:
     """切换当前会话，同时清空待发送的快捷问题。"""
     st.session_state["current_session_id"] = session_id
     st.session_state["pending_prompt"] = ""
+    st.session_state["follow_up_round"] = 0
 
 
 def create_new_chat() -> None:
@@ -307,6 +315,7 @@ def create_new_chat() -> None:
     st.session_state["sessions"] = sort_sessions(upsert_session(st.session_state["sessions"], new_session))
     st.session_state["current_session_id"] = new_session["id"]
     st.session_state["pending_prompt"] = ""
+    st.session_state["follow_up_round"] = 0
     save_sessions(st.session_state["sessions"])
 
 
@@ -465,6 +474,41 @@ def render_message(message: dict):
     render_references(references)
 
 
+def render_follow_up_card(follow_up, trace_id: str):
+    """渲染追问卡片，用户可选择补充信息或跳过。"""
+    st.markdown(
+        f"""
+        <div style="
+            border: 1px solid #3da9a3;
+            border-radius: 12px;
+            padding: 0.8rem 1rem;
+            background: linear-gradient(135deg, rgba(61,169,163,0.08), rgba(61,169,163,0.02));
+            margin: 0.5rem 0;
+        ">
+            <div style="font-size: 0.82rem; font-weight: 800; color: #2a7a74; margin-bottom: 0.4rem;">
+                💡 为进一步帮助您，想确认一下
+            </div>
+            <div style="font-size: 0.78rem; color: #3a8a84; margin-bottom: 0.6rem;">
+                原因：{follow_up.reason}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.write(follow_up.question)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("回答这个问题", key=f"follow_up_accept_{trace_id}"):
+            st.session_state["pending_prompt"] = follow_up.question
+            st.session_state["follow_up_round"] = st.session_state.get("follow_up_round", 0) + 1
+            st.rerun()
+    with col2:
+        if st.button("跳过，以上回答已足够", key=f"follow_up_skip_{trace_id}"):
+            pass
+
+
 with st.sidebar:
     # 侧边栏负责会话管理，体验上接近常见大模型产品的历史会话区。
     st.markdown("## 会话管理")
@@ -572,7 +616,7 @@ if prompt:
                 current_messages, session_memory
             )
 
-            res_stream = st.session_state["agent"].execute_stream(managed_messages, updated_memory)
+            res_stream = st.session_state["agent"].execute_stream(managed_messages, updated_memory, session_id=current_session["id"])
             with st.chat_message("assistant", avatar="🤖"):
                 response_placeholder = st.empty()
                 for _ in capture(res_stream, response_chunks, response_placeholder):
@@ -616,6 +660,38 @@ if prompt:
         response_text = "服务暂时不可用，请稍后重试。"
         with st.chat_message("assistant", avatar="🤖"):
             st.write(response_text)
+
+    # 获取 Trace 并计算置信度
+    trace = end_trace()
+    follow_up_triggered = False
+    if trace and not _NEED_HUMAN_MARKER in response_text:
+        try:
+            confidence = compute_confidence(trace, confidence_conf)
+            trace.combined_confidence = confidence.combined
+
+            # 检查是否需要追问
+            follow_up_round = st.session_state.get("follow_up_round", 0)
+            if should_follow_up(confidence, confidence_conf, follow_up_round):
+                follow_up = generate_follow_up(trace, confidence)
+                if follow_up:
+                    follow_up_triggered = True
+                    trace.follow_up_triggered = True
+                    trace.follow_up_action = "asked"
+
+                    # 渲染追问卡片
+                    with st.chat_message("assistant", avatar="🤖"):
+                        render_follow_up_card(follow_up, trace.trace_id)
+            else:
+                trace.follow_up_action = "skipped" if trace.follow_up_triggered else None
+        except Exception as e:
+            logger.warning(f"置信度计算失败: {str(e)}")
+
+    # 保存 Trace
+    if trace:
+        try:
+            save_trace(trace)
+        except Exception as e:
+            logger.warning(f"Trace保存失败: {str(e)}")
 
     # 最终回答也要落盘，这样刷新页面后仍能恢复完整会话。
     current_messages = current_messages + [{"role": "assistant", "content": response_text}]
