@@ -9,6 +9,10 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from utils.logger_handler import logger
 from utils.trace_context import record_tool_call
+from mcp_server.data_store import get_refund_rules_text
+
+# 订单相关工具名称，用于检测是否需要注入退款规则
+_ORDER_TOOLS = {"query_order", "query_logistics", "check_refund_rules"}
 
 
 
@@ -35,6 +39,10 @@ def monitor_tool(
         # 报告模式不靠模型自己记忆，而是由专门工具显式打开上下文开关。
         if tool_name == "fill_context_for_report":
             request.runtime.context["report"] = True
+
+        # 检测订单相关工具调用，设置标记用于注入退款规则
+        if tool_name in _ORDER_TOOLS:
+            request.runtime.context["order_mode"] = True
 
         return result
     except Exception as e:
@@ -64,6 +72,7 @@ def log_before_model(
 def report_prompt_switch(request: ModelRequest):     # 动态切换提示词
     """根据 runtime context 动态拼接主提示词、报告提示词和会话事实。"""
     is_report = request.runtime.context.get("report", False)
+    is_order_mode = request.runtime.context.get("order_mode", False)
     session_facts = request.runtime.context.get("session_facts", {})
     session_summary = request.runtime.context.get("session_summary", "")
 
@@ -77,7 +86,13 @@ def report_prompt_switch(request: ModelRequest):     # 动态切换提示词
     if session_summary:
         summary_prompt = f"\n\n历史对话摘要：\n{session_summary}\n请基于以上摘要和当前对话理解用户意图。"
 
-    combined_context = summary_prompt + facts_prompt
+    # 订单模式下注入退款规则文档作为参考
+    refund_rules_prompt = ""
+    if is_order_mode:
+        refund_rules_text = get_refund_rules_text()
+        refund_rules_prompt = f"\n\n{refund_rules_text}\n请在处理退款相关咨询时参考以上规则。"
+
+    combined_context = summary_prompt + facts_prompt + refund_rules_prompt
 
     if is_report:               # 是报告生成场景，返回报告生成提示词内容
         return load_report_prompts() + combined_context

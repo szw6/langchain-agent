@@ -1,6 +1,6 @@
 import os
 
-from utils.config_handler import agent_conf, chroma_conf, prompts_conf, rag_conf
+from utils.config_handler import agent_conf, chroma_conf, prompts_conf, rag_conf, mcp_conf
 from utils.path_tool import get_abs_path
 
 
@@ -62,5 +62,19 @@ def validate_runtime() -> list[str]:
                 f.read()
         except UnicodeDecodeError:
             issues.append(f"提示词文件不是 UTF-8 编码: {abs_path}")
+
+    # MCP 数据文件检查
+    mcp_data_files = [
+        ("MCP订单数据", mcp_conf.get("orders_data_path")),
+        ("MCP物流数据", mcp_conf.get("logistics_data_path")),
+        ("MCP退款规则", mcp_conf.get("refund_rules_path")),
+    ]
+    for label, relative_path in mcp_data_files:
+        if not relative_path:
+            issues.append(f"{label}未在配置中声明。")
+            continue
+        abs_path = get_abs_path(relative_path)
+        if not os.path.exists(abs_path):
+            issues.append(f"{label}不存在: {abs_path}")
 
     return issues

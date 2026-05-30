@@ -43,6 +43,13 @@
     - data_category：同 fetch_latest_external_data
     - max_months：最大返回月数，上限12，默认6
 11. `fill_context_for_report()`：仅在报告场景调用，激活报告模式。
+12. `query_order(order_id)`：查询订单详情，返回订单状态、商品、金额等信息。
+    - 返回 not_found 时请用户提供正确的订单编号
+13. `query_logistics(order_id)`：查询物流信息，返回承运商、运单号、运输轨迹。
+    - 返回 not_found 时请用户提供正确的订单编号
+14. `check_refund_rules(order_id, reason)`：检查退款规则，判断是否可退款。
+    - reason 常见值：质量问题、不想要了、发错货、商品损坏等
+    - 返回 not_eligible 时说明不符合退款条件及原因
 
 回答要求：
 1. 全程使用中文。

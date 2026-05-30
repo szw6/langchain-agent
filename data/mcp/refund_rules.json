@@ -1,0 +1,38 @@
+[
+  {
+    "rule_id": "R001",
+    "name": "7天无理由退货",
+    "description": "自签收之日起7天内，商品未使用且包装完好的，可无理由退货。",
+    "conditions": ["签收7天以内", "商品未使用", "包装完好"],
+    "time_limit_days": 7,
+    "exceptions": ["定制商品", "已拆封的耗材"],
+    "requires_photos": false
+  },
+  {
+    "rule_id": "R002",
+    "name": "15天质量问题换货",
+    "description": "自签收之日起15天内，因产品质量问题可申请换货。",
+    "conditions": ["签收15天以内", "产品质量问题"],
+    "time_limit_days": 15,
+    "exceptions": ["人为损坏", "未经授权的改装"],
+    "requires_photos": true
+  },
+  {
+    "rule_id": "R003",
+    "name": "30天质量问题退款",
+    "description": "自签收之日起30天内，因产品质量问题可申请退款。",
+    "conditions": ["签收30天以内", "产品质量问题"],
+    "time_limit_days": 30,
+    "exceptions": ["人为损坏"],
+    "requires_photos": true
+  },
+  {
+    "rule_id": "R004",
+    "name": "保修期内维修",
+    "description": "自购买之日起1年内，非人为损坏的故障可免费维修。",
+    "conditions": ["购买1年以内", "非人为损坏"],
+    "time_limit_days": 365,
+    "exceptions": ["进水损坏", "私自拆机"],
+    "requires_photos": true
+  }
+]

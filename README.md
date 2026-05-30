@@ -19,7 +19,7 @@
 - 启动前会进行运行环境自检，缺少关键配置时直接阻止应用启动。
 - **情绪识别规则引擎**：RAG 检索前对用户 query 进行情绪分析，命中高危规则（投诉、法律、安全事故等）直接转人工介入；低风险情绪标签注入 RAG 提示词，引导 LLM 调整回答语气。
 - **Trace 追踪与置信度评估**：记录每次对话的完整链路（情绪分析、工具调用、RAG 检索分数、LLM 耗时），计算综合置信度，低置信度时主动追问用户以获取更多信息。
-
+- **加入订单客服mcp server**：包含订单查询、物流查询、退款规则检查等工具，并将订单状态、退款规则文档作为 Resources 提供给 Agent，避免把所有业务数据塞进 Prompt，提升工具调用稳定性和可维护性。
 ## 会话记忆压缩机制
 
 为解决长对话 token 超限问题，项目实现了会话记忆压缩机制。
@@ -112,14 +112,14 @@
 
 ### 人工介入规则（命中即转人工，不走 RAG）
 
-| 规则名称 | 匹配示例 |
-|----------|----------|
+| 规则名称 | 匹配示例           |
+|----------|----------------|
 | 投诉举报 | 投诉、举报、315、消协、工商局 |
 | 法律维权 | 律师、法院、起诉、赔偿、打官司 |
 | 安全事故 | 着火、爆炸、漏电、触电、冒烟、伤人 |
 | 人身攻击 | 垃圾产品、骗钱、黑心、无良商家 |
 | 媒体曝光 | 媒体、记者、曝光、电视台、微博曝光 |
-| 强烈辱骂 | 操你、傻逼、去死、fuck、shit |
+| 强烈辱骂 | shit ……        |
 
 ### 情绪计分规则
 
@@ -223,45 +223,7 @@
 | max_follow_up_rounds | 1 | 最大追问次数 |
 | enabled | true | 是否启用追问功能 |
 
-### Trace 数据结构
 
-```json
-{
-  "trace_id": "uuid",
-  "session_id": "会话ID",
-  "timestamp": "ISO 8601",
-  "query": "用户原始问题",
-  "sentiment": {
-    "score": 0,
-    "level": "neutral",
-    "label": "中性",
-    "need_human": false,
-    "matched_rules": [],
-    "confidence": 0.9
-  },
-  "tool_calls": [
-    {
-      "tool_name": "rag_summarize",
-      "args": {"query": "..."},
-      "success": true,
-      "duration_ms": 1234
-    }
-  ],
-  "rag": {
-    "query": "原始query",
-    "expanded_query": "扩展query",
-    "candidate_count": 6,
-    "selected_count": 4,
-    "top_rerank_score": 0.72,
-    "avg_rerank_score": 0.55,
-    "confidence": 0.68
-  },
-  "llm_latency_ms": 2100,
-  "combined_confidence": 0.67,
-  "follow_up_triggered": false,
-  "follow_up_action": null
-}
-```
 
 ### 相关文件
 

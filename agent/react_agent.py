@@ -18,6 +18,7 @@ from agent.tools.agent_tools import (
     fetch_external_data_range,
     fill_context_for_report,
 )
+from agent.tools.mcp_tools import query_order, query_logistics, check_refund_rules
 from agent.tools.middleware import monitor_tool, log_before_model, report_prompt_switch
 
 
@@ -38,7 +39,8 @@ class ReactAgent:
             tools=[rag_summarize, get_weather, get_user_location, get_user_id,
                    get_current_month, list_report_months, fetch_latest_external_data,
                    get_user_profile, fetch_external_data, fetch_external_data_range,
-                   fill_context_for_report],
+                   fill_context_for_report,
+                   query_order, query_logistics, check_refund_rules],
             middleware=[monitor_tool, log_before_model, report_prompt_switch],
         )
 

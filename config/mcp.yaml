@@ -1,0 +1,14 @@
+# MCP Server 配置
+name: "order-customer-service"
+
+# 传输方式: stdio (本地进程) / sse (网络)
+transport: "stdio"
+
+# SSE 配置（transport 为 sse 时生效）
+sse_host: "0.0.0.0"
+sse_port: 8765
+
+# 数据文件路径（相对于项目根目录）
+orders_data_path: "data/mcp/orders.json"
+logistics_data_path: "data/mcp/logistics.json"
+refund_rules_path: "data/mcp/refund_rules.json"
